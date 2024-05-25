@@ -10,15 +10,12 @@ from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import ConversationalRetrievalChain
 from langchain.chains import create_retrieval_chain
 from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_community.document_loaders import TextLoader
 from langchain.memory import ConversationBufferMemory
 import gradio as gr
-import uuid
-
 
 llm = Ollama(model="llama3")
 loader = TextLoader("./data.txt")
@@ -74,29 +71,39 @@ qa_prompt = ChatPromptTemplate.from_messages(
 # Below we use create_stuff_documents_chain to feed all retrieved context # into the LLM. Note that we can also use StuffDocumentsChain and other # instances of BaseCombineDocumentsChain.
 question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
 rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-formatted_chat_history = []
+formatted_chat_history = {}
 
-with gr.Blocks() as chat_system:
-    gr.State(value=uuid.uuid4())
+
+with gr.Blocks(theme=gr.themes.Soft()) as chat_system:
+    chat_system.css=".gradio-container {background: url(https://s3.amazonaws.com/moments-large/19045277_egxk9mtw4yxmupfzyovbufny9.JPEG)}"
     initial_message = AIMessage(content="Hi! My name is Hachiko. Woof Woof")
     chat = gr.Chatbot(
         value=[[None, initial_message.content]],
         placeholder="Chat with Hachiko",
+        layout="bubble",
+        avatar_images=["https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQOIo3IG_5SGMZMXnhzEAQbYkkoycTJF1hHKCuylc5iGd-lX41G1jMhYD11DA&s","https://s3.amazonaws.com/moments-large/19045277_egxk9mtw4yxmupfzyovbufny9.JPEG"],
     )
     prompt = gr.Textbox(placeholder="Ask me anything about Kaashvi")
     submit = gr.Button(value="Submit", variant="primary")
     clear = gr.ClearButton([prompt, chat])
 
-    def llm_reply(question, chat_history):
-        formatted_chat_history.append(HumanMessage(content=question))
-        reply = rag_chain.invoke(
-            {"input": question, "chat_history": formatted_chat_history}
-        )["answer"]
-        formatted_chat_history.append(AIMessage(content=reply))
-        chat_history.append((question, reply))
-        return "", chat_history
+    def login(username,password):
+        formatted_chat_history[username] =[]
+        return True
+    
+    def user(user_message, history):
+        return "", history + [[user_message, None]]
+    
+    def llm_reply(history, request: gr.Request):
+        formatted_chat_history[request.username].append(HumanMessage(content=history[-1][0]))
+        history[-1][1] = ""
+        for chunk in rag_chain.stream({"input": history[-1][0], "chat_history": formatted_chat_history[request.username]}):
+            if answer_chunk := chunk.get("answer"):
+                history[-1][1] += answer_chunk
+                yield history
+        formatted_chat_history[request.username].append(AIMessage(history[-1][1]))
 
-    submit.click(llm_reply, [prompt, chat], [prompt, chat])
-    prompt.submit(llm_reply, [prompt, chat], [prompt, chat])
+    submit.click(user, [prompt,chat], [prompt,chat],queue=False).then(llm_reply, chat,chat)
+    prompt.submit(user, [prompt,chat], [prompt,chat],queue=False).then(llm_reply, chat,chat)
 
-chat_system.launch(share=True)
+chat_system.queue().launch(share=True,debug=True,auth=login,show_api=False)
